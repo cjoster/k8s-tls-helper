@@ -2,7 +2,8 @@
 
 ## Overview
 
-These tools are attempted 
+These tools are intended to simplify the private key/certificate signing request/secret generation
+process for kubernetes.
 
 ## Installation
 
