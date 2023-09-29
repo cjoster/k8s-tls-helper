@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+[ -z "${DEBUG+x}" ] || { >&2 echo "\"DEBUG\" environment variable set. Enabling debugging output."; set -x; }
+
+die() {
+	>&2 echo "FATAL: ${@:-UNKNOWN ERROR}"
+	exit 1
+}
+
+newkey() {
+	[ -n "${1}" ] || die "FQDN must be non-empty."
+	
+	key="$(openssl ecparam -genkey -name prime256v1 | openssl ec 2>/dev/null)"
+
+	if [ "${encrypted_key}" == "0" ]; then
+		keyfile="${fqdn}.key"
+		echo "${key}" > "${keyfile}"
+	else
+		keyfile="${fqdn}.key.enc"
+		echo " *** You will now be prompted to enter an encryption password for your private key. *** "
+		echo "${key}" | openssl ec -aes256 2>/dev/null > "${keyfile}"
+	fi
+		
+}
+
+[ -z "${ENCRYPT_PRIVATE_KEY+x}" ] && encrypted_key=0 || encrypted_key=1
+
+keyfile="$(ls *.key *.key.enc 2>/dev/null)" || true
+
+[ "$(echo "${keyfile}" | wc -w | sed 's/[[:space:]]*//g')" -le "1" ] || die "There is more than one key in this directory. Refusing to continue."
+
+if [ ! -f "${keyfile}" ]; then
+	if [ -z "${1:-}" ]; then
+		echo -n "Please enter the primary FQDN of the endpoint: "
+		read fqdn
+	else
+		fqdn="${1}"
+	fi
+	newkey "${fqdn}"
+else
+	fqdn="$(echo "${keyfile}" | sed 's/\.key\(\.enc\)\{0,1\}$//')"
+	[ -n "${fqdn}" ] && [ "${fqdn}" != "${keyfile}" ] || die "Could not extract fqdn from keyfile (${keyfile})."
+fi
+
+if [ -f "${fqdn}.csr" ]; then
+	[ -n "${key:-}" ] || key="$(cat "${keyfile}" | openssl ec 2>/dev/null)" || die "Could not load private key. If key is encrypted, this is likely a bad password."
+	if [ "$(openssl req -in "${fqdn}.csr" -pubkey -noout)" != "$(echo "${key}" | openssl pkey -pubout)" ]; then
+		die "Key \"${keyfile}\" does not match the csr \"${fqdn}.csr\". Either put the right key in place, or" \
+			"delete the csr file to regenerate."
+	fi
+fi
+
+if [ ! -f "${fqdn}.cnf" ]; then
+cat > "${fqdn}.cnf" << EOF
+[ req ]
+distinguished_name             = req_dn
+default_md                     = sha256
+req_extensions                 = req_ext
+
+[ req_dn ]
+countryName                    = Country Name (2 letter code)
+stateOrProvinceName            = State or Province Name
+localityName                   = Locality Name
+0.organizationName             = Organization Name
+organizationalUnitName         = Organizational Unit Name
+# commonName has been deprecated for more than 10 years. Please don't use it.
+# commonName                    = Common Name (e.g. your hostname)
+
+countryName_default            = US
+stateOrProvinceName_default    = California
+localityName_default           = Palo Alto
+0.organizationName_default     = VMware, Inc
+organizationalUnitName_default = Tanzu Labs
+# commonName_default            = ${fqdn}
+
+[ req_ext ]
+basicConstraints               = critical, CA:false
+# Other useful values for keyUsage for a leaf certificate is keyEncipherment,
+# which is not useful for sign-only key algorithms like ECC.
+keyUsage                       = critical, digitalSignature
+# Other useful values for extendedKeyUsage is
+#   clientAuth:  Used for client authentication. Can be combined with serverAuth
+#                for use-cases where the same certificate is used as both a server
+#                and a client (like, say, mail servers that mTLS authenticate with
+#                each other)
+#   codeSigning: For signing binaries
+extendedKeyUsage               = serverAuth
+subjectKeyIdentifier           = hash
+subjectAltName                 = @alt_names
+
+[ alt_names ]
+DNS.1 = ${fqdn}
+DNS.2 = $(echo "${fqdn}" | sed 's/\..*//')
+# IP addresses are frowned upon in certs, but some like to do it
+# the problem is that they put them in as DNS entries
+# IP.1 = 1.2.3.4
+EOF
+before="    "
+fi
+
+[ -n "${before:-}" ] || before="$(sha256sum "${fqdn}.cnf" | cut -d" " -f 1)"
+"${EDITOR:-vim}" "${fqdn}.cnf" || die "Edit aborted."
+after="$(sha256sum "${fqdn}.cnf" | cut -d" " -f 1)"
+
+if [ "${before}" != "${after}" -o ! -f "${fqdn}.csr" ]; then
+	[ -n "${key:-}" ] || key="$(cat "${keyfile}" | openssl ec 2>/dev/null)" || die "Could not load private key. If key is encrypted, this is likely a bad password."
+	openssl req -new -key <(echo "${key}") -config "${fqdn}.cnf" -batch -out "${fqdn}.csr" || die "Could not create the CSR."
+	openssl req -in "${fqdn}.csr" -text
+else
+	openssl req -in "${fqdn}.csr" -text
+	echo "# No changes to config file. CSR was not regenerated."
+	exit 0
+fi

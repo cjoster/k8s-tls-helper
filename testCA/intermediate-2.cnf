@@ -1,0 +1,14 @@
+prompt               = no
+
+[ req ]
+distinguished_name   = req_dn
+default_md           = sha256
+req_extensions       = req_ext
+
+[ req_dn ]
+CN                   = intermediate 2
+
+[ req_ext ]
+basicConstraints     = critical, CA:true
+keyUsage             = keyCertSign
+subjectKeyIdentifier = hash

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+log() {
+	>&2 echo "${@:-}"
+}
+
+log "Creating root.key...."
+openssl ecparam -genkey -name prime256v1 | openssl ec -out root.key 2>/dev/null
+log "Creating intermediate-1.key...."
+openssl ecparam -genkey -name prime256v1 | openssl ec -out intermediate-1.key 2>/dev/null
+log "Creating intermediate-2.key...."
+openssl ecparam -genkey -name prime256v1 | openssl ec -out intermediate-2.key 2>/dev/null
+
+log "Self-signing root CA..."
+openssl req -new -key root.key -config root.cnf -x509 -text -days 36500 -extensions req_ext -set_serial 1 -out root.crt
+
+log "Generating intermediate 1's CSR..."
+openssl req -new -key intermediate-1.key -config intermediate-1.cnf -text > intermediate-1.csr
+log "Signing intermediate 1's certificate..."
+openssl x509 -in intermediate-1.csr -req -extfile intermediate-1.cnf -extensions req_ext -CA root.crt -CAkey root.key -set_serial 2 -text -days 36500 > intermediate-1.crt
+
+log "Generating intermediate 2's CSR..."
+openssl req -new -key intermediate-2.key -config intermediate-2.cnf -text > intermediate-2.csr
+log "Signing intermediate 2's certificate..."
+openssl x509 -in intermediate-2.csr -req -extfile intermediate-2.cnf -extensions req_ext -CA intermediate-1.crt -CAkey intermediate-1.key -set_serial 3 -text -days 36500 > intermediate-2.crt
